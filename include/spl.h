@@ -86,6 +86,21 @@ static inline u32 read_le32(const void *p)
            ((u32)b[3] << 24);
 }
 
+/*
+ * The same for two bytes, and for the same reason.
+ *
+ * A BPB field at an odd offset - the byte count at 0x0b, the FAT count at 0x10,
+ * the partition table's first entry at 0x1be - is exactly where a compiler
+ * takes "assemble two bytes into a halfword" as a halfword load.  With
+ * translation off that is a data abort, not a read.
+ */
+static inline u32 read_le16(const void *p)
+{
+    const volatile u8 *b = (const volatile u8 *)p;
+
+    return (u32)b[0] | ((u32)b[1] << 8);
+}
+
 void *memcpy(void *dst, const void *src, unsigned long n);
 void *memmove(void *dst, const void *src, unsigned long n);
 void *memset(void *dst, int c, unsigned long n);

@@ -23,6 +23,8 @@
 #include "drivers/clocks/clocks.h"
 #include "drivers/pmic/pmic.h"
 #include "drivers/nbh/nbh.h"
+#include "drivers/sd/sd.h"
+#include "drivers/fat/fat.h"
 
 #include "bl.h"
 #include "cmdgroup.h"
@@ -357,6 +359,68 @@ static void cmd_wdatas(char **args, int nargs)
     bl_printf("wdatas: use 'nbhflash' to write them\n");
 }
 
+/*
+ * sdcard - the microSD slot.
+ *
+ * The first thing the bootloader does once it is in the menu and there is a
+ * card in it, because a card with an image on it is the whole reason the
+ * bootloader has an SD driver.
+ */
+static void cmd_sdcard(char **args, int nargs)
+{
+    struct sd_card card;
+
+    (void)args;
+    (void)nargs;
+
+    if (sd_init(&card)) {
+        bl_printf("sd: nothing in the slot\n");
+        return;
+    }
+    bl_printf("sd: rca 0x%x, %s addressing\n", card.rca,
+              card.byte_addressed ? "byte" : "block");
+    bl_printf("sd: %u blocks of %u = %u MB\n", (u32)card.blocks,
+              SD_BLOCK_SIZE,
+              (u32)(card.blocks * SD_BLOCK_SIZE / (1024 * 1024)));
+    bl_printf("sd: csd %08x %08x %08x %08x\n", card.csd[0], card.csd[1],
+              card.csd[2], card.csd[3]);
+}
+
+/*
+ * sdls [name] - what is on the card.
+ *
+ * With no argument it mounts the volume and lists the root; with one it opens
+ * that file and reports its size.  The size is the thing worth checking: a
+ * 287 MB image on a 512 MB card is what "the file is there" looks like, and a
+ * filesystem that says it is there when it is not is worse than one that says
+ * nothing.
+ */
+static void cmd_sdls(char **args, int nargs)
+{
+    struct sd_card card;
+    struct fat_file f;
+
+    if (sd_init(&card)) {
+        bl_printf("sd: nothing in the slot\n");
+        return;
+    }
+    if (fat_mount(&card)) {
+        bl_printf("sd: no FAT32 volume on it\n");
+        return;
+    }
+    bl_printf("fat: volume \"%s\"\r\n", fat_volume_label());
+
+    if (nargs > 1 && args[1][0]) {
+        if (fat_open_root(&card, args[1], &f)) {
+            bl_printf("fat: no %s on the root\n", args[1]);
+            return;
+        }
+        bl_printf("fat: %s is there, %u bytes\n", args[1], f.size);
+        return;
+    }
+    bl_printf("fat: mounted\n");
+}
+
 /* dcompasstest - the digital compass, which is the AKM codec's sibling. */
 static void cmd_dcompasstest(char **args, int nargs)
 {
@@ -504,6 +568,8 @@ const struct bl_flash_command misc_commands[] = {
     { "emapiTXpwr1",   emapi_nothing,     " <level> - transmit power" },
     { "emapiPkteng_start", emapi_nothing, " <mac> <tx> [ipg] [len] [n] - push frames" },
     { "emapiPkteng_stop",  emapi_nothing, " - stop pushing frames" },
+    { "sdcard",        cmd_sdcard,        " - is there a card, and what is it" },
+    { "sdls",          cmd_sdls,          " [name] - the card's FAT32 root" },
     { "btaddr",        cmd_btaddr,        " - the Bluetooth address" },
     { "btrouter",      cmd_btrouter,      " - route a call over Bluetooth" },
 };

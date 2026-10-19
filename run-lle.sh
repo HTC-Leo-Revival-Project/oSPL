@@ -22,6 +22,11 @@ set -e
 SPL_DIR=$(cd "$(dirname "$0")" && pwd)
 EMU=${EMU_DIR:-../qemu-hd2}
 NAND=${NAND:-nand.img}
+#
+# SD=<card.img> puts a card in the microSD slot, which is where the
+# bootloader looks for LEOIMG.nbh.  It is a FAT32 card with the file on its
+# root; tools/mkcard.sh makes one.
+SD=${SD:-}
 MODE=${1:-sdl}
 OUT=${OUT:-$SPL_DIR/build}
 
@@ -55,6 +60,7 @@ fi
 say "SPL       $SPL_DIR/build/spl.bin"
 say "emulator  $EMU"
 say "NAND      $NAND"
+[ -z "$SD" ] || say "SD card   $SD"
 #
 # Opened snapshot=on, so nothing a session does to the flash outlives it.  A
 # bootloader with erase and nbhflash in it is one keystroke from destroying the
@@ -107,6 +113,7 @@ say "starting QEMU"
 	-L ../src/qemu/pc-bios -L ../src/qemu/build/pc-bios \
 	-M "$M" \
 	-drive if=mtd,format=raw,file="$NAND",snapshot=on \
+	${SD:+-drive if=sd,file="$SD",format=raw} \
 	$SCREEN \
 	-serial "unix:$SOCK,server=on,wait=on" \
 	-serial file:"$RAMCON" \

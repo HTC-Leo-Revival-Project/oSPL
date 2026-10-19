@@ -37,6 +37,12 @@
  * image out of the "OS" area, which starts at block 0x212 in the same
  * layout: a WinCE MBR, an MSFLSH50 tag, then the image.
  */
+/*
+ * SDC2, the microSD slot.  A card in it is what the bootloader looks for the
+ * image on: FAT32, LEOIMG.nbh on the root, offered to be flashed.
+ */
+#define SDC2_BASE           0xA0400000u
+
 #define NAND_SPL_BLOCK      0x20au
 #define NAND_OS_BLOCK       0x212u
 
