@@ -12,7 +12,7 @@
 #include "drivers/nand/nand.h"
 #include "drivers/timer/timer.h"
 #include "bl.h"
-#include "flash.h"
+#include "cmdgroup.h"
 
 /*
  * The CRC the HSPL checks images with.  It is the usual reflected
