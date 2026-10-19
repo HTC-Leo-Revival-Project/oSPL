@@ -192,20 +192,70 @@ bridge to the baseband over the message channel (`CheckRadioReady`, `AUD_HP_EN`,
 Our `fmrouter` lists the partitions the header names, which is what the name
 suggests and is more use than a stub.
 
-### The other container
+### The other container is the same container
 
-`RUU_signed.nbh` also starts `R000FF` but has no signature - 16 zero bytes
-where "XDA-Developers!" would be - and is framed quite differently: its block
-list does not begin where this one's does, and a 1 MB file does not divide into
-0x10000-byte blocks with 0x80-byte signatures behind them.  It is the RUUNBH the
-HSPL looks for, and it is a different job.  `nbh_open()` refuses it, and the
-tests report that as a skip rather than a failure.
+`RUU_signed.nbh` from a stock ROM starts `R000FF` with no signature, and was
+being reported as a different format.  It is not: it is the same block list,
+one entry of 9 bytes plus the data plus 0x80 bytes of signature, and the
+signature is optional.  HTCFlasher's own generator (`yang`, in
+`HtcLeoPkg/ImageResources/Leo/yang_src`) writes `"XDA-Developers! "` at 0x07
+and HTC's tool leaves sixteen zero bytes.  Both flash.  So the signature says
+who wrote a file, not what it is, and refusing one over it was refusing a
+working flash.
+
+`yang`'s `struct HTCIMAGEHEADER` is the section table:
+
+    char     device[32];          uint32_t sectiontypes[32];
+    uint32_t sectionoffsets[32];  uint32_t sectionlengths[32];
+    char     CID[32];  char version[16];  char language[16];
+
+HTC's own files put the tables 0x20 bytes further on - types at 0x40, offsets
+at 0xc0, lengths at 0x140 - because its device field is twice as wide.  Both
+are read; the one that matters is whichever gives sections that add up.
+
+### The sections, and where they go
+
+    0x301  radio, 25 MB     boot area, FSBL, OSBL, AMSS, DSP1, and a MIBIB
+                             partition table inside naming the NAND blocks
+    0x380  512 B            "QCT_UMTS" - the modem's identity
+    0x200  512 KB           code, `ea 0003fe` at the front: the loader that
+                             runs before the OS
+    0x600  768 KB           the splash
+    0x400  259 MB           the OS: a WinCE area, MBR listing ULDR (0x20,
+                             1598 sectors from 2), XIP (0x23, 2624 from 1600
+                             - the kernel the bootloader jumps to), IMGFS
+                             (0x25, 122176 from 4224) and storage (0x04,
+                             101824 from 126400)
+    0x920  2 KB             "CONF" - the radio's configuration
+    0x610  54 KB            not identified
+    0x611  70 KB            not identified
+
+The OS section's pages each carry 8 bytes after the 2048: `u32 sector number`
+then `fd ff fb ff`.  `nbgen.c` in the same directory writes the same thing -
+`writetag(sectorNo, tag)` with `tag` being `0xFFFBFFFD` for sector 0,
+`0xFFFBFFFF` after it and `0xFFFFFFFF` for padding - and the phone's flash
+driver keeps it in the NAND spare area, four bytes to a codeword.  That is why
+`nbh_flash()` had been dropping it and why dropping it is not survivable.
+
+The OS area is 126400 sectors = 1975 blocks from 0x212, which is most of the
+rest of the part.  A stock NBH is 4370 blocks of 0x10000 in the file; the last
+is 0x5e44, because the image is not a whole number of 64 KB.
+
+### What `fmrouter` is not
+
+It prints `--- Welcomm to HTC MFG FM Router ---`.  It is the manufacturing
+bridge to the baseband over the message channel, not anything to do with
+routing partitions out of an image.
 
 ## What still has to be worked out
 
 - Whether `flags` is "hidden" or "locked" - `password` and the `Command is
   Locked!` string suggest a real lock, and this tree treats a zero as hidden.
-- The RUUNBH container, as above.
+- Where each section other than 0x400 goes in the flash.  The radio's is
+  worked out in `qemu-hd2/tools/hd2_radio.py` from the MIBIB table inside
+  section 0x301 and has not been ported to C; 0x200, 0x600, 0x380, 0x920,
+  0x610 and 0x611 have not been placed at all.  `nbh_flash_all()` lists them
+  rather than guessing.
 - What `fmrouter`'s message channel can actually do - whether the radio can be
   brought up from here at all.
 - `dispinit` (`0x95029634`) and `tpd` (`0x95062a74`) - the panel and touch
