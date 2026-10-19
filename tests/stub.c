@@ -17,6 +17,14 @@ static u8 flash[NAND_BLOCKS * NAND_BLOCK_SIZE];
 static u8 erased[NAND_BLOCKS];
 int verbose_flash;
 
+/*
+ * The spare area of every codeword, kept beside the data so the test can see
+ * whether the sector info arrived.  A real part holds it; the stub has to
+ * model it or "was the info written" is not a question the test can ask.
+ */
+static u8 spare[NAND_BLOCKS * NAND_PAGES_PER_BLK * NAND_CODEWORDS *
+                NAND_SPARE_LEN];
+
 #include <stdarg.h>
 
 void uart_puts(const char *s)
@@ -44,7 +52,32 @@ int nand_erase_block(u32 block)
         return -1;
     }
     memset(flash + (size_t)block * NAND_BLOCK_SIZE, 0xff, NAND_BLOCK_SIZE);
+    memset(spare + (size_t)block * NAND_BLOCK_SIZE / NAND_PAGE_SIZE *
+           NAND_CODEWORDS * NAND_SPARE_LEN, 0xff,
+           NAND_BLOCK_SIZE / NAND_PAGE_SIZE * NAND_CODEWORDS *
+           NAND_SPARE_LEN);
     erased[block] = 1;
+    return 0;
+}
+
+int nand_write_page_ex(u32 page, const void *src, const void *sp)
+{
+    const u8 *s = sp;
+    u8 *sp_now;
+    u32 cw;
+
+    if (nand_write_page(page, src)) {
+        return -1;
+    }
+    if (!s) {
+        return 0;
+    }
+    sp_now = spare + ((size_t)page * NAND_CODEWORDS) * NAND_SPARE_LEN;
+    for (cw = 0; cw < NAND_CODEWORDS; cw++) {
+        for (u32 i = 0; i < NAND_SPARE_LEN; i++) {
+            sp_now[cw * NAND_SPARE_LEN + i] &= s[cw * NAND_SPARE_LEN + i];
+        }
+    }
     return 0;
 }
 

@@ -295,6 +295,40 @@ static void cmd_nbhinfo(char **args, int nargs)
 }
 
 /*
+ * nbhsections [address] [length] - the section table, and where each section
+ * would go.
+ *
+ * A stock ROM has eight sections and this can place one of them, so this says
+ * which is which rather than presenting a file as though it were a single
+ * image.  A section with no known destination is listed as one, not guessed
+ * at: a partition written to the wrong block is a radio that does not come
+ * up, and there is no undo short of another flash.
+ */
+static void cmd_nbhsections(char **args, int nargs)
+{
+    struct nbh nb;
+
+    if (nbh_open_at(args, nargs, &nb, NULL)) {
+        return;
+    }
+    bl_printf("sections %u, %u bytes joined\r\n", nb.section_count,
+              nb.image_len);
+    for (u32 i = 0; i < nb.section_count; i++) {
+        const struct nbh_section *sec = &nb.section[i];
+        const char *where;
+
+        switch (sec->type) {
+        case NBH_SEC_OS:     where = "block 0x212, the OS area";   break;
+        case NBH_SEC_RADIO:  where = "the radio's own table";     break;
+        case NBH_SEC_LOADER: where = "not worked out";            break;
+        default:             where = "not worked out";            break;
+        }
+        bl_printf("  0x%03x  +0x%08x  %10u bytes  %s\r\n", sec->type,
+                  sec->off, sec->len, where);
+    }
+}
+
+/*
  * nbhflash [address] [length] - program the area the file describes.
  *
  * This is the destructive one, so it asks first: the block it erases holds the
@@ -309,7 +343,9 @@ static void cmd_nbhflash(char **args, int nargs)
     if (nbh_open_at(args, nargs, &nb, &addr)) {
         return;
     }
-    bl_printf("nbhflash: %s, %u sectors into block 0x%x\r\n", nb.version,
+    bl_printf("nbhflash: %s build %s, %u sections\r\n", nb.version,
+              nb.build, nb.section_count);
+    bl_printf("nbhflash: OS is %u sectors from block 0x%x\r\n",
               nb.os_sectors, (u32)NAND_OS_BLOCK);
     bl_printf("nbhflash: this erases block 0x%x.  type 'yes' to go\r\n",
               (u32)NAND_OS_BLOCK);
@@ -365,7 +401,7 @@ static void cmd_nbhflash(char **args, int nargs)
     }
 
     file_crc = nbh_file_checksum(&nb);
-    if (nbh_flash(&nb, 1)) {
+    if (nbh_flash_all(&nb, 1)) {
         return;
     }
     flash_crc = nbh_flash_checksum(&nb);
@@ -399,6 +435,7 @@ const struct bl_flash_command flash_commands[] = {
     { "recv",       cmd_recv,       " [Addr] [Length] - take bytes in" },
     { "nbhinfo",    cmd_nbhinfo,    " [Addr] [Length] - what the file says" },
     { "nbhflash",   cmd_nbhflash,   " [Addr] [Length] - flash it" },
+    { "nbhsections", cmd_nbhsections, " [Addr] [Length] - the section table" },
 };
 
 const int flash_command_count =

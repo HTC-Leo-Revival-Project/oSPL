@@ -19,9 +19,12 @@
 #define NAND_CW_USER        512u
 #define NAND_CW_RAW         528u
 #define BAD_BLOCK_OFFSET    464u
+#define NAND_SPARE_OFF      522u
+#define NAND_SPARE_LEN      4u
 
 int nand_read_page(u32 page, void *dst);
 int nand_write_page(u32 page, const void *src);
+int nand_write_page_ex(u32 page, const void *src, const void *spare);
 int nand_erase_block(u32 block);
 
 #endif

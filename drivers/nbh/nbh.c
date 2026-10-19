@@ -54,11 +54,27 @@
 #define NBH_NAMES_OFF      0x000
 #define NBH_NAME_LEN       4
 #define NBH_TARGET_OFF     0x020   /* "PB8110000"                      */
-#define NBH_AREALEN_OFF    0x140   /* bytes of OS area that follow     */
 #define NBH_VERSION_OFF    0x1e0
 #define NBH_VERSION_LEN    16
 #define NBH_BUILD_OFF      0x1f0
 #define NBH_BUILD_LEN      8
+
+/*
+ * The section table: 32 types, 32 offsets and 32 lengths, each array a
+ * contiguous run of words.  They line up with each other by index, which is
+ * the whole of the format's cleverness - there is no count and no terminator,
+ * just three arrays that stop being non-zero.
+ *
+ * The board and partition names are four bytes each from the front, and the
+ * target address is written out as text at 0x20.  Everything before 0x40 is
+ * that; the tables start where they are because the device field is twice as
+ * wide here as it is in HTCFlasher's own generator, which is the only
+ * difference between the two layouts.
+ */
+#define NBH_TYPES_OFF      0x040
+#define NBH_OFFSETS_OFF    0x0c0
+#define NBH_LENGTHS_OFF    0x140
+#define NBH_HDR_SIZE       0x200   /* and the sections start here       */
 
 /* How the OS area is laid out inside the file. */
 #define NBH_SECTOR         2048u
@@ -79,6 +95,37 @@ u32 nbh_image(const struct nbh *nb, u32 off, void *dst, u32 len)
 {
     u8 *out = dst;
     u32 got = 0;
+
+    if (nb->block_len) {
+        /*
+         * The regular case: every block is the same, so a byte's place in
+         * the file is its place in the image plus a fixed number of strides.
+         * This is what lets one routine read a 287 MB ROM it could never hold.
+         */
+        u32 blk = off / nb->block_len;
+        u32 skip = off - blk * nb->block_len;
+        u64 at = NBH_LIST_OFF + NBH_BLOCK_HDR + (u64)blk * nb->block_span + skip;
+        u32 take;
+
+        if (skip >= nb->block_len || at >= (u64)nb->file_len) {
+            return 0;
+        }
+        take = len;
+        if ((u64)at + take > nb->file_len) {
+            take = (u32)((u64)nb->file_len - at);
+        }
+        if (off + take > nb->image_len) {
+            if (off >= nb->image_len) {
+                return 0;
+            }
+            take = nb->image_len - off;
+        }
+        if (!take) {
+            return 0;
+        }
+        memcpy(dst, (const void *)(u32)(nb->base + (u32)at), take);
+        return take;
+    }
 
     while (got < len) {
         const struct nbh_block *b = NULL;
@@ -119,17 +166,10 @@ u32 nbh_image(const struct nbh *nb, u32 off, void *dst, u32 len)
     return got;
 }
 
-/* Read one field out of the joined image, a word at a time. */
-static u32 image_le32(const struct nbh *nb, u32 off, u32 *ok)
+static u32 le32(const u8 *p)
 {
-    u8 b[4];
-
-    if (nbh_image(nb, off, b, 4) != 4) {
-        *ok = 0;
-        return 0;
-    }
-    return (u32)b[0] | ((u32)b[1] << 8) | ((u32)b[2] << 16) |
-           ((u32)b[3] << 24);
+    return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) |
+           ((u32)p[3] << 24);
 }
 
 static void image_copy(const struct nbh *nb, u32 off, char *dst, u32 len)
@@ -172,7 +212,6 @@ int nbh_open(u32 addr, u32 avail, struct nbh *nb, const char **why)
     const u8 *f = (const u8 *)(u32)addr;
     u32 off = NBH_LIST_OFF;
     u32 image_len = 0;
-    u32 ok = 1;
     static u8 buf[512] __attribute__((aligned(4)));
 
     *why = NULL;
@@ -185,17 +224,35 @@ int nbh_open(u32 addr, u32 avail, struct nbh *nb, const char **why)
         *why = "no R000FF at the front of it";
         return NBH_E_MAGIC;
     }
-    if (memcmp(f + NBH_SIG_OFF, NBH_SIG, NBH_SIG_LEN)) {
-        *why = "the magic is right but the signature is not";
-        return NBH_E_SIGNATURE;
-    }
-
+    /*
+     * The signature is not required.  HTCFlasher's generator writes
+     * "XDA-Developers! " there and HTC's own tool leaves sixteen zero bytes,
+     * and both produce files that flash, so it says who wrote the file rather
+     * than what it is.  What decides is the structure: the block list has to
+     * walk cleanly and the section table has to add up, and both are checked
+     * below.  Refusing a file over a field that is optional is refusing a
+     * working flash because of a signature.
+     */
     memset(nb, 0, sizeof(*nb));
+    nb->signed_by_xda = memcmp(f + NBH_SIG_OFF, NBH_SIG, NBH_SIG_LEN) == 0;
     nb->base = addr;
     nb->file_len = avail;
 
-    /* the block list: every block's data, and where it lands when joined */
-    while (off + NBH_BLOCK_HDR <= avail && nb->block_count < NBH_MAX_BLOCKS) {
+    /*
+     * The block list.
+     *
+     * Every block seen is 0x10000 bytes of data behind a 9-byte header with
+     * 0x80 bytes of signature behind that, and a stock ROM has 4370 of them -
+     * so what is kept is the stride, and a byte's place in the file is its
+     * place in the joined image plus a fixed number of strides.  That is what
+     * lets one routine read a 287 MB image it could never hold.
+     *
+     * A list that changes size part way through would need a table, and there
+     * is room for a handful; past that it is refused rather than half read,
+     * because a file that cannot be addressed exactly is a file that would be
+     * flashed to the wrong place.
+     */
+    while (off + NBH_BLOCK_HDR <= avail) {
         u8 hdr[NBH_BLOCK_HDR];
         u32 len, siglen, data;
 
@@ -214,10 +271,45 @@ int nbh_open(u32 addr, u32 avail, struct nbh *nb, const char **why)
             return NBH_E_TRUNCATED;
         }
 
-        nb->block[nb->block_count].off = data;
-        nb->block[nb->block_count].len = len;
-        nb->block[nb->block_count].image_off = image_len;
-        nb->block_count++;
+        if (!nb->block_count) {
+            /* the first block sets the stride for every one after it */
+            nb->block_len = len;
+            nb->block_span = NBH_BLOCK_HDR + len + siglen;
+            nb->block_seam = siglen;
+            nb->block[0].off = data;
+            nb->block[0].len = len;
+            nb->block[0].image_off = 0;
+            nb->block_count = 1;
+        } else if (len != nb->block_len || siglen != nb->block_seam) {
+            /*
+             * The last block is short - a stock ROM's is 0x5e44 rather than
+             * 0x10000, because the image is not a whole number of 64 KB - and
+             * that is not the same thing as a list that changes size part way
+             * through.  The stride still describes where every byte is; only
+             * the final block runs out earlier, and every read is already
+             * clamped to the length of the joined image, so it comes out
+             * right.
+             *
+             * So the question is whether this is the block before the
+             * terminator.  If it is, the stride stands; if anything follows
+             * it, the arithmetic no longer describes the file and it is
+             * refused rather than read to the wrong place.
+             */
+            u32 next = data + len + siglen;
+
+            if (next + NBH_BLOCK_HDR <= avail) {
+                const u8 *n = f + next;
+                u32 nlen = (u32)n[0] | ((u32)n[1] << 8) | ((u32)n[2] << 16) |
+                           ((u32)n[3] << 24);
+
+                if (nlen) {
+                    *why = "the block sizes change part way through, "
+                           "which this cannot address";
+                    return NBH_E_MAGIC;
+                }
+            }
+        }
+
         image_len += len;
         off = data + len + siglen;
     }
@@ -229,17 +321,67 @@ int nbh_open(u32 addr, u32 avail, struct nbh *nb, const char **why)
     nb->image_len = image_len;
 
     /*
-     * The area's length is in the header, but the MBR at 0x200 is what
-     * actually has to be right: it is the thing the flash is read back
-     * through, so a file whose header and MBR disagree has to be refused
-     * rather than half believed.  The header's number is used as the
-     * expected length.
+     * The section table, before anything else: everything else is a section,
+     * and a file whose table does not add up is not worth reading further.
      */
-    nb->os_off = NBH_OS_OFF;
-    nb->os_bytes = image_le32(nb, NBH_AREALEN_OFF, &ok);
-    if (!ok) {
-        *why = "the area length is past the end of what arrived";
-        return NBH_E_TRUNCATED;
+    {
+        u8 types[NBH_MAX_SECTIONS * 4];
+        u8 offs[NBH_MAX_SECTIONS * 4];
+        u8 lens[NBH_MAX_SECTIONS * 4];
+
+        if (nbh_image(nb, NBH_TYPES_OFF, types, sizeof(types)) !=
+                sizeof(types) ||
+            nbh_image(nb, NBH_OFFSETS_OFF, offs, sizeof(offs)) !=
+                sizeof(offs) ||
+            nbh_image(nb, NBH_LENGTHS_OFF, lens, sizeof(lens)) !=
+                sizeof(lens)) {
+            *why = "the section table runs past what arrived";
+            return NBH_E_TRUNCATED;
+        }
+        for (u32 i = 0; i < NBH_MAX_SECTIONS; i++) {
+            u32 t = le32(types + i * 4);
+            u32 o = le32(offs + i * 4);
+            u32 l = le32(lens + i * 4);
+
+            if (!t) {
+                continue;
+            }
+            if ((u64)o + l > nb->image_len) {
+                *why = "a section runs past the end of the image";
+                return NBH_E_MAGIC;
+            }
+            nb->section[nb->section_count].type = t;
+            nb->section[nb->section_count].off = o;
+            nb->section[nb->section_count].len = l;
+            nb->section_count++;
+        }
+        if (!nb->section_count) {
+            *why = "no sections in it";
+            return NBH_E_MAGIC;
+        }
+    }
+
+    /*
+     * The OS section is the one this can place on its own: a WinCE area laid
+     * out one page per sector, with 8 bytes of sector info behind each.  A
+     * file without one is not refused outright - the radio is flashed from
+     * its own file - but there is nothing here that could be booted.
+     */
+    {
+        const struct nbh_section *sec = nbh_find(nb, NBH_SEC_OS);
+
+        if (!sec) {
+            /*
+             * Not refused so much as noticed: a radio RUU flashes this same
+             * container with no OS in it, and there is a real 25 MB one in
+             * the tree.  It has parsed correctly - it simply is not a phone
+             * image, and saying so is more use than an error.
+             */
+            *why = "no OS section (type 0x400) - this is a radio flash";
+            return NBH_E_NO_OS;
+        }
+        nb->os_off = sec->off;
+        nb->os_bytes = sec->len;
     }
     if (nb->os_bytes < NBH_STRIDE) {
         *why = "the area it describes is smaller than one sector";
@@ -249,7 +391,7 @@ int nbh_open(u32 addr, u32 avail, struct nbh *nb, const char **why)
     nb->os_flash_bytes = nb->os_sectors * NBH_SECTOR;
 
     /* the MBR, and the partition inside it that names the image */
-    if (nbh_image(nb, NBH_OS_OFF, buf, 512) != 512) {
+    if (nbh_image(nb, nb->os_off, buf, 512) != 512) {
         *why = "the MBR is past the end of what arrived";
         return NBH_E_TRUNCATED;
     }
@@ -298,9 +440,14 @@ int nbh_open(u32 addr, u32 avail, struct nbh *nb, const char **why)
         *why = "the image is longer than the area around it";
         return NBH_E_MAGIC;
     }
-    /* and the area has to fit in the block it is written to */
-    if (nb->os_flash_bytes > NAND_BLOCK_SIZE) {
-        *why = "the area is larger than the block it is written to";
+    /*
+     * And it has to fit in the flash from the block the area starts at.  A
+     * single-OS image is one block; a stock ROM's is thousands, which is the
+     * whole of the rest of the part.
+     */
+    if ((u64)nb->os_flash_bytes >
+        (u64)(NAND_NUM_BLOCKS - NAND_OS_BLOCK) * NAND_BLOCK_SIZE) {
+        *why = "the area is larger than the flash behind it";
         return NBH_E_MAGIC;
     }
 
@@ -319,6 +466,21 @@ int nbh_open(u32 addr, u32 avail, struct nbh *nb, const char **why)
     image_copy(nb, NBH_BUILD_OFF, nb->build, NBH_BUILD_LEN);
 
     return NBH_OK;
+}
+
+const struct nbh_section *nbh_section(const struct nbh *nb, u32 n)
+{
+    return n < nb->section_count ? &nb->section[n] : NULL;
+}
+
+const struct nbh_section *nbh_find(const struct nbh *nb, u32 type)
+{
+    for (u32 i = 0; i < nb->section_count; i++) {
+        if (nb->section[i].type == type) {
+            return &nb->section[i];
+        }
+    }
+    return NULL;
 }
 
 const char *nbh_name(const struct nbh *nb, int i, char *dst, u32 len)
@@ -345,45 +507,156 @@ const char *nbh_name(const struct nbh *nb, int i, char *dst, u32 len)
  * MBR is missing - which osimage_locate() reports as no image - rather than
  * an MBR that points at sectors of the old one.
  */
-int nbh_flash(const struct nbh *nb, int verbose)
+/*
+ * Erase every block the area covers.
+ *
+ * Whole blocks, all of them first, before any of them is written.  A NAND
+ * that is erased and then written block by block leaves a flash where half
+ * the area is new and half is old; erased everything up front, a power cut
+ * leaves a block whose MBR has not been written yet, which reads as no image
+ * rather than as a corrupt one.
+ */
+static int erase_area(u32 first_block, u32 blocks)
+{
+    for (u32 b = 0; b < blocks; b++) {
+        if (nand_erase_block(first_block + b)) {
+            uart_printf("flashing: block 0x%x would not erase\r\n",
+                        first_block + b);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Write the OS area.
+ *
+ * The eight bytes of sector info behind each sector are not thrown away as
+ * they once were: they go into the NAND's spare area, four bytes to a
+ * codeword, which is where the phone's flash driver looks for them.  Without
+ * them the area reads back perfectly and the OS still cannot find a single
+ * one of its sectors, which is a confusing way to fail.
+ */
+static int flash_os(const struct nbh *nb, int verbose)
 {
     static u8 page[NAND_PAGE_SIZE] __attribute__((aligned(4)));
+    u8 spare[NAND_CODEWORDS * NAND_SPARE_LEN];
     u32 first_page = NAND_OS_BLOCK * NAND_PAGES_PER_BLK;
+    u32 blocks = (nb->os_sectors + NAND_PAGES_PER_BLK - 1) / NAND_PAGES_PER_BLK;
 
-    if (verbose) {
-        uart_puts("flashing: erasing the block\r\n");
+    if (blocks > 1 && verbose) {
+        uart_printf("flashing: %u sectors in %u blocks from 0x%x\r\n",
+                    nb->os_sectors, blocks, (u32)NAND_OS_BLOCK);
     }
-    if (nand_erase_block(NAND_OS_BLOCK)) {
-        uart_puts("flashing: the block would not erase\r\n");
+    if (erase_area(NAND_OS_BLOCK, blocks)) {
         return -1;
     }
 
     for (u32 s = 0; s < nb->os_sectors; s++) {
         u32 src = nb->os_off + s * NBH_STRIDE;
 
-        /*
-         * Only the 2048 bytes of the sector go in the flash; the eight bytes
-         * of sector info after it are what the file needed and the flash
-         * never had.
-         */
         if (nbh_image(nb, src, page, NBH_SECTOR) != NBH_SECTOR) {
             uart_puts("flashing: ran out of file part way through\r\n");
             return -1;
         }
-        if (nand_write_page(first_page + s, page)) {
+        if (nbh_image(nb, src + NBH_SECTOR, spare, NBH_SECTOR_INFO) !=
+            NBH_SECTOR_INFO) {
+            uart_puts("flashing: the sector info is not all there\r\n");
+            return -1;
+        }
+
+        /*
+         * The tag lives in the spare area too, and the controller relocates
+         * two of the four bytes out of the user data into the chip's own
+         * bad-block marker - which is why a page's bytes 464 and 465 do not
+         * come back as they went in, and why the checksums below allow for
+         * it.
+         */
+        if (nand_write_page_ex(first_page + s, page, spare)) {
             uart_puts("flashing: a page would not program\r\n");
             return -1;
         }
-        if (verbose && ((s & 7) == 7 || s + 1 == nb->os_sectors)) {
-            uart_printf("flashing: %u/%u sectors\r\n", s + 1,
-                        nb->os_sectors);
+        if (verbose && !(s % 256) && s) {
+            uart_printf("flashing: %u/%u sectors\r\n", s, nb->os_sectors);
         }
     }
 
     if (verbose) {
-        uart_puts("flashing: written\r\n");
+        uart_printf("flashing: %u sectors written\r\n", nb->os_sectors);
     }
     return 0;
+}
+
+/*
+ * Write every section of the file that has somewhere to go.
+ *
+ * The OS is placed; the rest are listed with what this does not yet know
+ * about them, rather than guessed at.  A partition written to the wrong
+ * block is not a small mistake - it is a radio that does not come up, and
+ * there is no undo for it short of another flash.
+ *
+ * The block the bootloader itself is in is never written: `covers()` refuses
+ * it before anything is erased, so a file that happens to describe that
+ * block cannot take this one out from under itself.
+ */
+/*
+ * Write only the OS area.
+ *
+ * This is what `nbhflash` does, and what the checksums are taken over.  It is
+ * the part of the flash that a single-OS file - which is all cCLK's NBH ever
+ * has - needs; for a stock ROM use nbh_flash_all(), which says what it did
+ * not place instead of quietly doing less.
+ */
+int nbh_flash(const struct nbh *nb, int verbose)
+{
+    return flash_os(nb, verbose);
+}
+
+int nbh_flash_all(const struct nbh *nb, int verbose)
+{
+    u32 placed = 0;
+    u32 unknown = 0;
+
+    if (verbose) {
+        uart_printf("flashing: %u sections\r\n", nb->section_count);
+    }
+
+    for (u32 i = 0; i < nb->section_count; i++) {
+        const struct nbh_section *sec = &nb->section[i];
+
+        if (sec->type == NBH_SEC_OS) {
+            if (verbose) {
+                uart_printf("  0x%03x OS      %u bytes -> block 0x%x\r\n",
+                            sec->type, sec->len, (u32)NAND_OS_BLOCK);
+            }
+            if (flash_os(nb, verbose)) {
+                return -1;
+            }
+            placed++;
+            continue;
+        }
+
+        /*
+         * Whatever it is, it has to know which blocks it is about to erase,
+         * and the one this program is running out of is not among them.
+         */
+        unknown++;
+        if (verbose) {
+            uart_printf("  0x%03x %-8s %u bytes -> not placed: no "
+                        "destination known\r\n",
+                        sec->type, "", sec->len);
+        }
+    }
+
+    if (verbose) {
+        uart_printf("flashing: %u section(s) placed, %u not\r\n", placed,
+                    unknown);
+        if (unknown) {
+            uart_puts("flashing: the flash is not what a full flash would "
+                      "leave\r\n");
+        }
+    }
+    return placed ? 0 : -1;
 }
 
 /*

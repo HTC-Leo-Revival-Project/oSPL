@@ -211,9 +211,10 @@ int nand_read_page(u32 page, void *dst)
  * erased.  The bad-block marker is two bytes of the last codeword's user area
  * on this part, and they have to read 0xFF for the block to count as good.
  */
-int nand_write_page(u32 page, const void *src)
+int nand_write_page_ex(u32 page, const void *src, const void *spare)
 {
     const u8 *in = (const u8 *)src;
+    const u8 *sp = (const u8 *)spare;
     u8 codeword[NAND_CW_RAW];
 
     if (page >= NAND_NUM_BLOCKS * NAND_PAGES_PER_BLK) {
@@ -239,12 +240,29 @@ int nand_write_page(u32 page, const void *src)
             codeword[465] = 0xff;
         }
 
+        /*
+         * The four bytes of spare area each codeword carries.  On this part
+         * the phone's own flash driver keeps WinCE's per-sector information
+         * here - the sector's number and a tag - so an image flashed without
+         * it is readable but the OS cannot find any of its sectors.  Left at
+         * 0xff when the caller has nothing to say.
+         */
+        if (sp) {
+            memcpy(codeword + NAND_SPARE_OFF,
+                   sp + cw * NAND_SPARE_LEN, NAND_SPARE_LEN);
+        }
+
         for (u32 i = 0; i < CFG0_WRITE_LEN; i += 4) {
             mmio_write32(NAND_BASE, FLASH_BUFFER + i, read_le32(codeword + i));
         }
         nand_exec();
     }
     return 0;
+}
+
+int nand_write_page(u32 page, const void *src)
+{
+    return nand_write_page_ex(page, src, NULL);
 }
 
 int nand_erase_block(u32 block)

@@ -28,11 +28,54 @@
 /* Why nbh_open() would not. */
 #define NBH_OK             0
 #define NBH_E_MAGIC        -1      /* not one of these at all            */
-#define NBH_E_SIGNATURE    -2      /* right magic, wrong signature       */
+#define NBH_E_SIGNATURE    -2      /* reserved: the signature is not
+                                    * required, so this is never returned  */
 #define NBH_E_TRUNCATED    -3      /* it says more than arrived           */
 #define NBH_E_NOMEM        -4      /* the area is larger than the flash   */
+#define NBH_E_NO_OS        -5      /* a radio-only flash: no OS section   */
 
+/*
+ * The block list is regular in every file seen: 0x10000 bytes of data behind
+ * a 9-byte header, then 0x80 bytes of signature, over and over.  A stock ROM
+ * has 4370 of them and a cCLK NBH three, so the list is not held - the
+ * stride is, and the offset of a byte is arithmetic.  NBH_MAX_BLOCKS only
+ * bounds the fallback for a list that is *not* regular, which is a different
+ * thing and is checked for rather than assumed.
+ */
 #define NBH_MAX_BLOCKS     8
+
+/*
+ * The section table.
+ *
+ * Up to NBH_MAX_SECTIONS of them, each a type, where it is in the joined
+ * image and how long it is.  The types are HTC's, not ours, and they are what
+ * say where each piece of the ROM goes:
+ *
+ *   0x400  the OS - a WinCE area: an MBR, the ULDR, the XIP kernel, the
+ *          IMGFS and room for storage.  This is the only section a phone
+ *          flashing a single OS cares about, and the only one cCLK's NBH has
+ *          at all.
+ *   0x301  the radio: the boot area, FSBL, OSBL, AMSS and the DSP, with a
+ *          partition table of their own inside it naming the blocks.
+ *   0x200  512 KiB of code starting with a branch - the loader that runs
+ *          before the OS does.
+ *   0x380, 0x600, 0x920, 0x610, 0x611  the modem's identity and config, the
+ *          splash, and two more whose contents this has not identified.
+ *
+ * A file with one section is a single OS image; a stock NBH has all of them,
+ * and flashing it means every one of them going somewhere.
+ */
+#define NBH_MAX_SECTIONS    32
+
+#define NBH_SEC_OS          0x400u
+#define NBH_SEC_RADIO       0x301u
+#define NBH_SEC_LOADER      0x200u
+
+struct nbh_section {
+    u32 type;
+    u32 off;        /* where it starts in the joined image */
+    u32 len;
+};
 
 struct nbh_block {
     u32 off;        /* where the data starts, in the file           */
@@ -59,6 +102,25 @@ struct nbh {
 
     char version[16];       /* "CLK1.4.0.2"                               */
     char build[8];          /* "WWE"                                      */
+
+    u32 section_count;
+    struct nbh_section section[NBH_MAX_SECTIONS];
+
+    int signed_by_xda;   /* whether the signature was there; it is optional */
+
+    /*
+     * Set when every block in the list was the same size, which is every file
+     * seen.  Then a byte of the joined image is at a fixed stride from the
+     * start of the file and no per-block table is needed - a stock ROM is
+     * 287 MB and holding an entry for each of 4370 blocks to say the same
+     * thing is a waste of the one thing a bootloader has least of.
+     */
+    u32 block_len;       /* bytes of data per block      */
+    u32 block_span;      /* and the whole stride, header and signature too */
+    u32 block_seam;      /* signature bytes behind each block             */
+    int irregular;       /* the block sizes change part way through, so the
+                         * stride does not describe the file and the small
+                         * table is what is read instead                    */
 };
 
 /*
@@ -77,12 +139,30 @@ u32 nbh_image(const struct nbh *nb, u32 off, void *dst, u32 len);
 /* One of the four-byte names in the table; the first two are the board. */
 const char *nbh_name(const struct nbh *nb, int i, char *dst, u32 len);
 
+/* The nth section, or null if the file has not got that many. */
+const struct nbh_section *nbh_section(const struct nbh *nb, u32 n);
+
+/* The section of a given type, or null. */
+const struct nbh_section *nbh_find(const struct nbh *nb, u32 type);
+
 /*
  * Program the area into the flash, replacing whatever is there.  The area
  * carries its own MBR, so this writes it verbatim rather than describing it
  * again.
  */
 int nbh_flash(const struct nbh *nb, int verbose);
+
+/*
+ * Write every section that has somewhere to go, and report the ones that do
+ * not rather than guessing where they belong.
+ *
+ * The OS goes to the area at block 0x212; the radio and the rest carry
+ * destinations of their own that are not worked out yet, and are listed
+ * instead of written.  This never erases the block the bootloader is in, so
+ * a file that describes that block cannot take the bootloader out from under
+ * itself mid-flash.
+ */
+int nbh_flash_all(const struct nbh *nb, int verbose);
 
 /* Checksums of the area in the flash and in the file, to compare the two. */
 u32 nbh_flash_checksum(const struct nbh *nb);

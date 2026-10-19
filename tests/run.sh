@@ -39,6 +39,11 @@ $CC -std=gnu11 -O1 -g -Wall -Wextra \
     "$spl/drivers/nbh/nbh.c" "$spl/spl/crc32.c" \
     -o "$out"
 
+# The stock ROM's NBH is the interesting one: 287 MB with eight sections,
+# against cCLK's single-section 128 KB file.  tools/ruu-extract.sh is what
+# gets it out of the RUU, and it is a host step - nothing here writes to a
+# flash.
+#
 # LEOIMG.nbh is the file this parses.  RUU_signed.nbh is passed too when it is
 # lying about: it is the other container - the same magic, no signature, a
 # different block framing - and the parser is expected to refuse it, which the
@@ -48,7 +53,8 @@ if [ $# -gt 0 ]; then
 else
     set --
     for f in "$emu/LEOIMG.nbh" "$emu/images/LEOIMG.nbh" \
-             "$emu/images/RUU_signed.nbh" "$emu/build/sources/RUU_signed.nbh"
+             "$emu/images/RUU_signed.nbh" "$emu/build/sources/RUU_signed.nbh" \
+             "$emu/build/sources/wm-3.14.407.2/RUU_signed.nbh"
     do
         [ -f "$f" ] && set -- "$@" "$f"
     done
