@@ -10,30 +10,13 @@
 #include "board.h"
 
 #include "drivers/nand/nand.h"
+#include "drivers/nbh/nbh.h"
 #include "drivers/timer/timer.h"
+#include "drivers/uart/uart.h"
+#include "osimage.h"
 #include "bl.h"
 #include "cmdgroup.h"
-
-/*
- * The CRC the HSPL checks images with.  It is the usual reflected
- * CRC-32 (polynomial 0xedb88320), running over the bytes in order with the
- * result left in the register, which is what a flash image's trailing
- * checksum turns out to be on this part.
- */
-#define CRC32_POLY 0xedb88320u
-
-static u32 crc32(const u8 *p, u32 n, u32 seed)
-{
-    u32 crc = seed;
-
-    for (u32 i = 0; i < n; i++) {
-        crc ^= p[i];
-        for (int b = 0; b < 8; b++) {
-            crc = (crc >> 1) ^ (CRC32_POLY & (u32)-(int)(crc & 1));
-        }
-    }
-    return crc;
-}
+#include "crc32.h"
 
 /*
  * checksum <start-block> <blocks> - CRC a run of the flash.
@@ -160,15 +143,251 @@ static void cmd_progress(char **args, int nargs)
     bl_printf("] %u%%\n", pct);
 }
 
-/* getdevinfo - what the flash says about itself and where the areas are. */
+/*
+ * getdevinfo - what the flash says about itself and where the areas are.
+ *
+ * The areas are named after what this one knows them to be.  Where an NBH
+ * says so, that is better than a constant here, so the block the OS area
+ * lives in is taken from the area's own MBR and the block the HSPL lives in
+ * stays a constant - the HSPL is loaded by the boot ROM from a block this
+ * code is not the one choosing.
+ */
 static void cmd_getdevinfo(char **args, int nargs)
 {
+    struct os_image img;
+
     (void)args;
     (void)nargs;
-    bl_printf("CID registered for block 0x20a\n");
-    bl_printf("NBH image for block 0x212\n");
+    bl_printf("CID registered for block 0x%x\n", NAND_SPL_BLOCK);
+    bl_printf("NBH image for block 0x%x\n", NAND_OS_BLOCK);
     bl_printf("Storage is at block 0x%x\n", NAND_OS_BLOCK);
     bl_printf("%u blocks of %u pages\n", NAND_NUM_BLOCKS, NAND_PAGES_PER_BLK);
+
+    if (!osimage_locate(&img)) {
+        bl_printf("OS area: partition %u, %u sectors from %u, at 0x%08x\n",
+                  img.part, img.sectors, img.start, (u32)img.base);
+    }
+}
+
+/*
+ * recv <address> <length> - take `length` bytes in over the console.
+ *
+ * This is how a file gets into RAM.  There is no filesystem and no download
+ * protocol underneath this, so the bytes come down the same serial line the
+ * menu is on, and the person on the other end is the one sending them.
+ *
+ * It stops on a timeout rather than hanging: a receive that is waiting for
+ * bytes that are not coming should leave the bootloader able to say so and
+ * come back to the prompt, not wedge it.
+ */
+static void cmd_recv(char **args, int nargs)
+{
+    u32 addr, len, got = 0;
+    u8 *dst;
+
+    if (nargs != 3) {
+        bl_printf("CMD>recv [Address] [Length]\n");
+        return;
+    }
+    addr = bl_number(args[1]);
+    len = bl_number(args[2]);
+    if (!len || len > DOWNLOAD_MAX) {
+        bl_printf("length %u does not fit in the download area\n", len);
+        return;
+    }
+    if (addr & 3) {
+        bl_printf("address 0x%x is not word aligned\n", addr);
+        return;
+    }
+
+    bl_printf("recv: %u bytes to 0x%08x, send them now\r\n", len, addr);
+    dst = (u8 *)(u32)addr;
+
+    while (got < len) {
+        int c = uart_getc();
+        int idle = 0;
+
+        while (c < 0) {
+            udelay(1000);
+            if (++idle > 5000) {        /* five seconds and nothing */
+                bl_printf("\r\nrecv: gave up after %u of %u bytes\r\n",
+                          got, len);
+                return;
+            }
+            c = uart_getc();
+        }
+        dst[got++] = (u8)c;
+
+        /*
+         * Progress is reported sparingly and over the top of itself.  Every
+         * character sent here has to be read by the other end before this
+         * loop can take another byte, so a bootloader that says too much
+         * while receiving makes the receiving slower - and an image is 128 KB
+         * enough times over.
+         */
+        if (got == len || !(got & 0x7fff)) {
+            bl_printf("\r\nrecv: %u/%u\r", got, len);
+        }
+    }
+    bl_printf("\r\nrecv: %u bytes\r\n", got);
+}
+
+/*
+ * nbhinfo [address] [length] - what the file at `address` says.
+ *
+ * The length is needed because the file is not self-terminating as far as a
+ * reader is concerned: the block list ends with a length of zero, but how
+ * much of it arrived is something the sender knows and the receiver does not.
+ */
+static int nbh_open_at(char **args, int nargs, struct nbh *nb,
+                       u32 *addr_out)
+{
+    u32 addr = DOWNLOAD_BASE;
+    u32 len = DOWNLOAD_MAX;
+    const char *why = NULL;
+    int r;
+
+    if (nargs > 1 && args[1][0]) {
+        addr = bl_number(args[1]);
+    }
+    if (nargs > 2 && args[2][0]) {
+        len = bl_number(args[2]);
+    }
+
+    r = nbh_open(addr, len, nb, &why);
+    if (r) {
+        bl_printf("nbh: %s\r\n", why ? why : "no");
+        bl_printf("nbh: LEOIMG.nbh - FAIL\r\n");
+        return r;
+    }
+    if (addr_out) {
+        *addr_out = addr;
+    }
+    return 0;
+}
+
+static void cmd_nbhinfo(char **args, int nargs)
+{
+    struct nbh nb;
+
+    if (nbh_open_at(args, nargs, &nb, NULL)) {
+        return;
+    }
+    bl_printf("blocks        %u, %u bytes joined\r\n", nb.block_count,
+              nb.image_len);
+    bl_printf("version       %s  build %s\r\n", nb.version, nb.build);
+    bl_printf("target        0x%x\r\n", nb.target);
+    bl_printf("OS area       +0x%x, %u bytes in %u sectors\r\n", nb.os_off,
+              nb.os_bytes, nb.os_sectors);
+    bl_printf("              (%u bytes of it are sector info)\r\n",
+              nb.os_sectors * NBH_SECTOR_INFO);
+    bl_printf("MBR partition %u: %u sectors from %u\r\n", nb.mbr_part,
+              nb.part_sectors, nb.start_sector);
+    for (int i = 0; i < 6; i++) {
+        char name[8];
+
+        if (nbh_name(&nb, i, name, sizeof(name)) && name[0]) {
+            bl_printf("name %d        \"%s\"%s\r\n", i, name,
+                      i < 2 ? "  (board)" : "");
+        }
+    }
+    bl_printf("nbh: LEOIMG.nbh - OK\r\n");
+}
+
+/*
+ * nbhflash [address] [length] - program the area the file describes.
+ *
+ * This is the destructive one, so it asks first: the block it erases holds the
+ * image the phone boots, and there is no putting that back.
+ */
+static void cmd_nbhflash(char **args, int nargs)
+{
+    struct nbh nb;
+    u32 addr = DOWNLOAD_BASE;
+    u32 file_crc, flash_crc;
+
+    if (nbh_open_at(args, nargs, &nb, &addr)) {
+        return;
+    }
+    bl_printf("nbhflash: %s, %u sectors into block 0x%x\r\n", nb.version,
+              nb.os_sectors, (u32)NAND_OS_BLOCK);
+    bl_printf("nbhflash: this erases block 0x%x.  type 'yes' to go\r\n",
+              (u32)NAND_OS_BLOCK);
+
+    {
+        int answered = 0;
+
+        while (!answered) {
+            int c;
+            int idle = 0;
+
+            bl_printf("nbhflash> ");
+            while ((c = uart_getc()) < 0) {
+                udelay(1000);
+                if (++idle > 30000) {       /* thirty seconds to answer */
+                    bl_printf("\r\nnbhflash: nobody said yes, so not\r\n");
+                    return;
+                }
+            }
+            if (c == '\r' || c == '\n') {
+                continue;
+            }
+            if (c == 'y' || c == 'Y') {
+                answered = 1;
+            } else if (c == 'n' || c == 'N' || c == 0x03) {
+                bl_printf("\r\nnbhflash: not done\r\n");
+                return;
+            } else {
+                /* anything else is not an answer; ignore it */
+                continue;
+            }
+
+            /*
+             * Take the rest of the line.  Whoever typed "yes" meant it, and
+             * leaving "es" on the line has it read as the next command, which
+             * is both wrong and confusing to look at afterwards.
+             */
+            idle = 0;
+            while ((c = uart_getc()) < 0 && idle < 3000) {
+                udelay(1000);
+                idle++;
+            }
+            if (c >= 0) {
+                while (c != '\r' && c != '\n' && idle < 3000) {
+                    idle = 0;
+                    while ((c = uart_getc()) < 0 && idle < 3000) {
+                        udelay(1000);
+                        idle++;
+                    }
+                }
+            }
+        }
+    }
+
+    file_crc = nbh_file_checksum(&nb);
+    if (nbh_flash(&nb, 1)) {
+        return;
+    }
+    flash_crc = nbh_flash_checksum(&nb);
+
+    bl_printf("nbhflash: file 0x%08x, flash 0x%08x\r\n", file_crc, flash_crc);
+    if (file_crc != flash_crc) {
+        bl_printf("nbhflash: they differ - the write did not take\r\n");
+        return;
+    }
+    bl_printf("nbhflash: verified\r\n");
+
+    /* and the flash has to read back as an image we can boot */
+    {
+        struct os_image img;
+
+        if (osimage_locate(&img)) {
+            bl_printf("nbhflash: but there is still no image to boot\r\n");
+            return;
+        }
+        bl_printf("nbhflash: image at 0x%08x, %u sectors - boot it\r\n",
+                  (u32)img.base, img.sectors);
+    }
 }
 
 const struct bl_flash_command flash_commands[] = {
@@ -177,6 +396,9 @@ const struct bl_flash_command flash_commands[] = {
     { "erase",      cmd_erase,      " [Block] [Blocks] - erase for writing" },
     { "progress",   cmd_progress,   " [percent] - a progress bar" },
     { "getdevinfo", cmd_getdevinfo, " - flash identity and areas" },
+    { "recv",       cmd_recv,       " [Addr] [Length] - take bytes in" },
+    { "nbhinfo",    cmd_nbhinfo,    " [Addr] [Length] - what the file says" },
+    { "nbhflash",   cmd_nbhflash,   " [Addr] [Length] - flash it" },
 };
 
 const int flash_command_count =

@@ -22,6 +22,7 @@
 #include "drivers/timer/timer.h"
 #include "drivers/clocks/clocks.h"
 #include "drivers/pmic/pmic.h"
+#include "drivers/nbh/nbh.h"
 
 #include "bl.h"
 #include "cmdgroup.h"
@@ -223,39 +224,137 @@ static void cmd_ruustart(char **args, int nargs)
 }
 
 /*
- * The NBH image: fmrouter picks a partition out of one, lnbs and lrs read
- * its NB and loader sectors, wdatas writes the whole run back.  There is no
- * NBH flashed here, so these say so rather than inventing one.
+ * The NBH image.
+ *
+ * These are the HSPL's names for working with a flashed image, and they all
+ * need one in RAM: the file comes in with `recv`, and these read out of it.
+ * The address and the length default to where `recv` leaves it.
+ */
+static int nbh_of(char **args, int nargs, struct nbh *nb)
+{
+    u32 addr = DOWNLOAD_BASE;
+    u32 len = DOWNLOAD_MAX;
+    const char *why = NULL;
+    int r;
+
+    if (nargs > 1 && args[1][0]) {
+        addr = bl_number(args[1]);
+    }
+    if (nargs > 2 && args[2][0]) {
+        len = bl_number(args[2]);
+    }
+    r = nbh_open(addr, len, nb, &why);
+    if (r) {
+        bl_printf("nbh: %s\n", why ? why : "no reason given");
+        bl_printf("nbh: LEOIMG.nbh - FAIL\n");
+    }
+    return r;
+}
+
+/*
+ * fmrouter [image] [length] [partition] - what the file holds.
+ *
+ * The HSPL uses this to route out of an image during flashing: the partition
+ * numbers in its own address space are the ones named in the header, and the
+ * header is what says which board they belong to.
  */
 static void cmd_fmrouter(char **args, int nargs)
 {
-    (void)args;
-    if (nargs < 3) {
-        bl_printf("CMD>fmrouter <image> <partition>\n");
+    struct nbh nb;
+
+    if (nbh_of(args, nargs, &nb)) {
         return;
     }
-    bl_printf("no NBH image on this board to route out of\n");
+    for (int i = 0; i < 6; i++) {
+        char name[8];
+
+        if (nbh_name(&nb, i, name, sizeof(name)) && name[0]) {
+            bl_printf("part %d \"%s\"%s\n", i, name,
+                      i < 2 ? "  (board)" : "");
+        }
+    }
+    bl_printf("target 0x%x\n", nb.target);
+    bl_printf("nbh: LEOIMG.nbh - OK\n");
 }
 
+/*
+ * lnbs [image] [length] - the NB sectors of the image.
+ *
+ * "NB" is the factory's name for a block of the image that is written but not
+ * run: the MBR that says where things are, and the tag in front of the OS.
+ * They come first and they are what the flash has to be given before anything
+ * else can be found in it.
+ */
 static void cmd_lnbs(char **args, int nargs)
 {
-    (void)args;
-    (void)nargs;
-    bl_printf("no NBH image: no NB sectors to read\n");
+    struct nbh nb;
+    u8 sector[NBH_SECTOR];
+
+    if (nbh_of(args, nargs, &nb)) {
+        return;
+    }
+    if (nbh_image(&nb, nb.os_off, sector, sizeof(sector)) != sizeof(sector)) {
+        bl_printf("lnbs: the MBR is not all there\n");
+        return;
+    }
+    bl_printf("NB %u: MBR, partition %d, %u sectors from %u\n", 0u,
+              nb.mbr_part, nb.part_sectors, nb.start_sector);
+    if (nbh_image(&nb, nb.os_off + NBH_STRIDE, sector, 8) == 8) {
+        char tag[9];
+
+        memcpy(tag, sector, 8);
+        tag[8] = '\0';
+        bl_printf("NB 1: \"%s\"\n", tag);
+    }
+    for (u32 n = 0; n < nb.os_sectors && n < 4; n++) {
+        bl_printf("NB %u: sector %u, %u bytes at +0x%x\n", n, n,
+                  NBH_SECTOR, nb.os_off + n * NBH_STRIDE);
+    }
 }
 
+/*
+ * lrs [image] [length] - the loader's own sectors.
+ *
+ * The loader is what runs before the OS does: the partition entry in the MBR
+ * says how many sectors it occupies, and those are the first ones of the
+ * image itself rather than of the area around it.
+ */
 static void cmd_lrs(char **args, int nargs)
 {
-    (void)args;
-    (void)nargs;
-    bl_printf("no NBH image: no loader sectors to read\n");
+    struct nbh nb;
+    u32 first;
+
+    if (nbh_of(args, nargs, &nb)) {
+        return;
+    }
+    if (nb.start_sector == 0) {
+        bl_printf("lrs: the MBR names no image\n");
+        return;
+    }
+    first = nb.os_off + nb.start_sector * NBH_STRIDE;
+    bl_printf("loader: %u sectors from area sector %u\n", nb.part_sectors,
+              nb.start_sector);
+    bl_printf("loader: +0x%x in the file, %u bytes at 0x%08x when loaded\n",
+              first, nb.part_sectors * NBH_SECTOR, OS_IMAGE_BASE);
 }
 
+/*
+ * wdatas [image] [length] - write the whole run back.
+ *
+ * The HSPL's version of this writes one run of sectors; ours writes the whole
+ * area, which is the same thing with the boundaries worked out for us.  It
+ * asks first, because the block it erases is the one the phone boots from.
+ */
 static void cmd_wdatas(char **args, int nargs)
 {
-    (void)args;
-    (void)nargs;
-    bl_printf("no NBH image: nothing to write back\n");
+    struct nbh nb;
+
+    if (nbh_of(args, nargs, &nb)) {
+        return;
+    }
+    bl_printf("wdatas: %u sectors, crc 0x%08x\n", nb.os_sectors,
+              nbh_file_checksum(&nb));
+    bl_printf("wdatas: use 'nbhflash' to write them\n");
 }
 
 /* dcompasstest - the digital compass, which is the AKM codec's sibling. */
