@@ -3,6 +3,7 @@
  *
  * The HSPL's menu has fifty-eight commands and this is where the ones that
  * are neither the flash, the bus nor the memory live: the panel, the touch
+
  * screen, the power, the settings the OS reads back, and the ones that need
  * hardware this machine has not got.
  *
@@ -19,6 +20,8 @@
 #include "drivers/i2c/i2c.h"
 #include "drivers/keypad/keypad.h"
 #include "drivers/timer/timer.h"
+#include "drivers/clocks/clocks.h"
+#include "drivers/pmic/pmic.h"
 
 #include "bl.h"
 #include "cmdgroup.h"
@@ -327,7 +330,43 @@ static void cmd_btrouter(char **args, int nargs)
     bl_printf("btrouter: no Bluetooth controller on this board\n");
 }
 
+/*
+ * clocks and pmic - what the machine is running at, and what the power chip
+ * says about itself.  Neither is on the HSPL's menu under these names; they
+ * are what 'info' grew once the clocks and the power chip were real rather
+ * than assumed.
+ */
+static void cmd_clocks(char **args, int nargs)
+{
+    (void)args;
+    (void)nargs;
+    bl_printf("PLL0 MPLL %u Hz\n", clocks_pll(0));
+    bl_printf("PLL1 GPLL %u Hz\n", clocks_pll(1));
+    bl_printf("PLL4      %u Hz\n", clocks_pll(4));
+    bl_printf("PLL5      %u Hz\n", clocks_pll(5));
+}
+
+static void cmd_pmic(char **args, int nargs)
+{
+    struct board_info info;
+
+    (void)args;
+    (void)nargs;
+    pmic_identify(&info);
+    if (!info.present) {
+        bl_printf("pmic: nothing at 0x%02x on the bus\n", 0x48);
+        bl_printf("board %u, panel %u, power-on %u (assumed)\n", info.id,
+                  info.panel, info.power_on);
+        return;
+    }
+    bl_printf("pmic version 0x%02x\n", info.version);
+    bl_printf("board %u, panel %u, power-on 0x%08x\n", info.id, info.panel,
+              info.power_on);
+}
+
 const struct bl_flash_command misc_commands[] = {
+    { "clocks",        cmd_clocks,        " - what the PLLs are running at" },
+    { "pmic",          cmd_pmic,          " - the power chip, and the board" },
     { "set",           cmd_set,           " [name] [value] - settings" },
     { "password",      cmd_password,      " [on|off] - lock the settings" },
     { "display",       cmd_display,       " - the scanout back on" },

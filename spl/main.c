@@ -17,22 +17,12 @@
 #include "drivers/uart/uart.h"
 #include "drivers/keypad/keypad.h"
 #include "drivers/display/display.h"
+#include "drivers/clocks/clocks.h"
+#include "drivers/pmic/pmic.h"
 
 #include "bl.h"
 #include "autoboot.h"
-
-/*
- * Tell the OS what board it is on.  The real bootloader works most of this
- * out from the hardware - the board id from an EEPROM over I2C, the panel
- * from the MDDI link - and leaves the answers where the board's drivers
- * read them from.  Those answers are constants for now.
- */
-static void board_identify(void)
-{
-    mmio_write32(GLOBALS_BOARD_ID, 0, BOARD_ID);
-    mmio_write32(GLOBALS_PANEL_TYPE, 0, PANEL_TYPE_SHARP);
-    mmio_write32(GLOBALS_POWER_ON, 0, POWER_ON_BUTTON);
-}
+#include "boardid.h"
 
 void spl_main(void)
 {
@@ -40,12 +30,21 @@ void spl_main(void)
     uart_puts("\r\nSPL: starting\r\n");
 
     /*
-     * The panel goes up first.  If there is going to be anything on the
-     * glass, it is worth the display already scanning out before spending
-     * however long the rest of this takes.
+     * The clocks go up first because everything else needs them: the flash
+     * controller, the panel and the OS itself are all clocked off what this
+     * sets running, and a machine with the PLLs stopped cannot do anything
+     * at all.  Then the power chip, which is where the board says what it
+     * is.
+     */
+    clocks_init();
+    board_globals_fill();
+
+    /*
+     * Then the panel.  If there is going to be anything on the glass, it is
+     * worth the display already scanning out before spending however long
+     * the rest of this takes.
      */
     display_init();
-    board_identify();
 
     /*
      * Volume-down held down at reset is how the phone is asked to stop being

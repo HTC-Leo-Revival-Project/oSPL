@@ -16,6 +16,7 @@
 #include "drivers/uart/uart.h"
 #include "drivers/display/console.h"
 #include "drivers/keypad/keypad.h"
+#include "drivers/pmic/pmic.h"
 
 #include "format.h"
 #include "bl.h"
@@ -172,10 +173,13 @@ static void cmd_blversion(char **args, int nargs)
 
 static void cmd_info(char **args, int nargs)
 {
+    struct board_info b;
+
     (void)args;
     (void)nargs;
-    bl_printf("Board ID is %u\n", (u32)BOARD_ID);
-    bl_printf("Panel_TypeDetect: %u\n", (u32)PANEL_TYPE_SHARP);
+    pmic_identify(&b);
+    bl_printf("Board ID is %u\n", b.id);
+    bl_printf("Panel_TypeDetect: %u\n", b.panel);
     bl_printf("Memory base 0x%08x, %u KB\n", (u32)RAM_BASE,
               (u32)(RAM_END / 1024));
 }
