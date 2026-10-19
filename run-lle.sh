@@ -57,6 +57,8 @@ say "emulator  $EMU"
 say "NAND      $NAND"
 say "mode      baseband/DSP LLE${USB:+, USB over vhci_hcd}"
 say "display   $MODE"
+[ -n "${KEYS:-}" ] && say "keys      $KEYS (held down at reset)"
+[ -n "${CMDS:-}" ] && say "commands  $(printf '%s ' "$CMDS")"
 
 mkdir -p "$OUT"
 UART="$OUT/uart1.log"
@@ -72,6 +74,10 @@ fi
 
 M="htcleo,baseband=lle,baseband-firmware=${AMSS:-amss.elf},baseband-trace=${TRACE:-off}"
 [ -n "${USB:-}" ] && M="$M,usb-host=lle"
+# KEYS=voldown holds a key down at reset, which is how the bootloader is asked
+# to become the bootloader rather than start the OS.
+[ -n "${KEYS:-}" ] && M="$M,keys=$KEYS"
+
 M="$M,spl=$SPL_DIR/build/spl.bin"
 
 # The UART1 log goes through a socket, because a file: chardev is buffered and
@@ -79,8 +85,14 @@ M="$M,spl=$SPL_DIR/build/spl.bin"
 # half of it: QEMU binds the socket and then blocks for the client before the
 # machine is built, so not one byte the guest writes can arrive before anyone
 # is listening for it.
+# One reader per unix socket, so the thing that logs the console is also the
+# thing that can type at it.  CMDS="info" passes bootloader commands to type.
+# CMDS is a list of commands to type at the bootloader's prompt, one per line.
+CMD_ARGS=
+[ -n "${CMDS:-}" ] && CMD_ARGS=$(printf '%s\n' "$CMDS" | sed 's/.*/"--cmd" "&"/')
+
 cd "$EMU/images"
-python3 "$SPL_DIR/uartlog.py" "$SOCK" "$UART" &
+python3 "$SPL_DIR/tools/console.py" "$SOCK" "$UART" $CMD_ARGS &
 LOGGER=$!
 
 say "starting QEMU"
@@ -97,8 +109,21 @@ QEMU=$!
 
 say "pid $QEMU; the console is $UART"
 say "Ctrl-C here stops it"
-trap 'say stopping; kill $QEMU 2>/dev/null; wait $QEMU 2>/dev/null; kill $LOGGER 2>/dev/null; exit 0' INT TERM
+
+# Whatever happened - a clean exit or a Ctrl-C - show what was said.
+finish() {
+	kill $QEMU 2>/dev/null
+	wait $QEMU 2>/dev/null
+	kill $LOGGER 2>/dev/null
+	wait $LOGGER 2>/dev/null
+	say "the console said:"
+	if [ -s "$UART" ]; then
+		tr '\r' '\n' < "$UART" | grep -a . || true
+	else
+		say "  (nothing)"
+	fi
+}
+trap 'finish; exit 0' INT TERM
 
 wait $QEMU || true
-kill $LOGGER 2>/dev/null || true
-say "QEMU exited"
+finish
