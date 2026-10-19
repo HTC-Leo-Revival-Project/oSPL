@@ -2,7 +2,8 @@
  * main.c - the bootloader.
  *
  * What a phone does between the core coming out of reset and the OS starting:
- * say what we are, identify the flash, and find the OS image in it.
+ * say what we are, bring the panel up, tell the board what it is, identify
+ * the flash and find the OS image in it.
  *
  * The real HSPL does much more - it brings the clocks and the PMIC up, reads
  * the panel and the EEPROM over I2C, builds a bad block table, DMOVs the
@@ -14,6 +15,7 @@
 
 #include "drivers/uart/uart.h"
 #include "drivers/nand/nand.h"
+#include "drivers/display/display.h"
 
 #include "osimage.h"
 
@@ -29,6 +31,19 @@ static void stop(void)
     }
 }
 
+/*
+ * Tell the OS what board it is on.  The real bootloader works most of this
+ * out from the hardware - the board id from an EEPROM over I2C, the panel
+ * from the MDDI link - and leaves the answers where the board's drivers
+ * read them from.  Those answers are constants for now.
+ */
+static void board_identify(void)
+{
+    mmio_write32(GLOBALS_BOARD_ID, 0, BOARD_ID);
+    mmio_write32(GLOBALS_PANEL_TYPE, 0, PANEL_TYPE_SHARP);
+    mmio_write32(GLOBALS_POWER_ON, 0, POWER_ON_BUTTON);
+}
+
 void spl_main(void)
 {
     struct nand_info nand;
@@ -36,6 +51,14 @@ void spl_main(void)
 
     uart_init();
     uart_puts("\r\nSPL: starting\r\n");
+
+    /*
+     * The panel goes up first.  If there is going to be anything on the
+     * glass, it is worth the display already scanning out before spending
+     * however long the rest of this takes.
+     */
+    display_init();
+    board_identify();
 
     /*
      * Identify the flash.  Everything after this depends on it, so stop here
