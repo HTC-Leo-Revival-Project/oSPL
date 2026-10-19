@@ -78,7 +78,6 @@
 #define CFG1_ECC_ON        0x0000
 #define CFG1_X16           0x0002
 #define CFG1_BB_POS(n)     (((n) + 1u) << 6)
-#define BAD_BLOCK_OFFSET   464u
 #define CFG1_READ          (CFG1_ECC_ON | CFG1_X16 | \
                             CFG1_BB_POS(BAD_BLOCK_OFFSET))
 

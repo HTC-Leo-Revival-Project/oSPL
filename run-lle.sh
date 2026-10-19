@@ -55,6 +55,13 @@ fi
 say "SPL       $SPL_DIR/build/spl.bin"
 say "emulator  $EMU"
 say "NAND      $NAND"
+#
+# Opened snapshot=on, so nothing a session does to the flash outlives it.  A
+# bootloader with erase and nbhflash in it is one keystroke from destroying the
+# image it boots from, and a test run has no business leaving the NAND in a
+# state the next run has to notice.  tools/nbh-flash.py copies the image
+# instead, because it wants to keep the result.
+
 say "mode      baseband/DSP LLE${USB:+, USB over vhci_hcd}"
 say "display   $MODE"
 [ -n "${KEYS:-}" ] && say "keys      $KEYS (held down at reset)"
@@ -99,7 +106,7 @@ say "starting QEMU"
 ../src/qemu/build/qemu-system-arm \
 	-L ../src/qemu/pc-bios -L ../src/qemu/build/pc-bios \
 	-M "$M" \
-	-drive if=mtd,format=raw,file="$NAND" \
+	-drive if=mtd,format=raw,file="$NAND",snapshot=on \
 	$SCREEN \
 	-serial "unix:$SOCK,server=on,wait=on" \
 	-serial file:"$RAMCON" \

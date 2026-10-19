@@ -77,13 +77,39 @@ SPL: loaded
 SPL: jumping to 0x11800000
 ```
 
+## Flashing an image
+
+The phone takes its OS in as an NBH, and the bootloader here takes one the same
+way.  The whole round trip, on a copy of the NAND:
+
+    tools/nbh-flash.py ../qemu-hd2/LEOIMG.nbh
+
+That starts the machine with volume-down held so it comes up in the
+bootloader, hands it the file over the console, and lets it write the area into
+the flash - then checks the flash reads back as an image, and exits non-zero if
+it does not.  `--no-flash` takes the file in and describes it without writing
+anything, which is how to look at a file before erasing anything.
+
+By hand, at the prompt:
+
+    recv 0x4000000 132667      <- and send the file's bytes
+    nbhinfo 0x4000000 132667   <- what it says it holds
+    nbhflash 0x4000000 132667  <- write it (asks first)
+    boot
+
+`tests/run.sh` checks the parser against the real files without a machine in
+the way, which is fast enough to be worth doing before suspecting the emulator.
+
 ## Layout
 
 ```
 include/          board.h is the memory map, spl.h is types and helpers
 drivers/uart      the console, on UART1DM
 drivers/nand      the flash: identify, read a page, read a run skipping bad
-                  blocks
+                  blocks, program a page, erase a block
+drivers/nbh       the flashing container: parse it, and write its area
+drivers/clocks    the PLLs, which everything else is clocked off
+drivers/pmic      the power chip, and the board identity that is on it
 drivers/display   the MDP display processor, the LCDC, and text on them
 drivers/gpio      the GPIO banks
 drivers/keypad    the 3x3 key matrix
@@ -99,9 +125,13 @@ spl/flash.c       the commands that touch the NAND
 spl/bus.c         the commands that talk to things on a bus
 spl/misc.c        the panel, the power, the settings, and the rest of the menu
 spl/format.c      the one printf, with the sinks as callbacks
+spl/crc32.c       the checksum a flash image is compared by
+spl/div.c         the integer divide the compiler emits a call for
 linker/spl.ld     the flat image, entry at offset 0
 reverse/          what was worked out of the phone's own HSPL, and the tools
-tools/            the font generator, and the console session
+tools/            the font generator, the console session, the flashing run
+tests/            checks that do not need the machine, and the stand-in it is
+                  built against
 run-lle.sh        boot it in the emulator, in baseband/DSP LLE mode
 ```
 

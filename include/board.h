@@ -18,6 +18,14 @@
 #define RAM_END             0x28000000u  /* end of SDRAM bank1_3 */
 #define SPL_STACK_TOP       0x08000000u  /* our stack, clear of everything */
 
+/*
+ * Where a file is put while it is being taken in.  Below the stack and well
+ * clear of the SPL at the bottom and of the OS image at 0x11800000, so that
+ * an image can be received and then booted without moving anything.
+ */
+#define DOWNLOAD_BASE       0x04000000u
+#define DOWNLOAD_MAX        0x04000000u  /* up to the stack */
+
 /* Where the OS image is put, and where it is entered. */
 #define OS_IMAGE_BASE       0x11800000u
 #define OS_IMAGE_MAX        0x0A000000u  /* "clear 10MB ext RAM" */

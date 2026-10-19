@@ -10,6 +10,14 @@
 #define NAND_PAGE_SIZE      2048u
 #define NAND_CODEWORDS      4u
 #define NAND_CW_USER        512u  /* the user data in one codeword        */
+
+/*
+ * Where the bad-block marker lives: two bytes of the last codeword's user
+ * area.  They have to read 0xFF for the block to count as good, so the driver
+ * writes them as 0xFF whatever the data says, and anything comparing a file
+ * against the flash has to allow for it.
+ */
+#define BAD_BLOCK_OFFSET    464u
 #define NAND_CW_RAW         528u  /* that plus ECC, spare and the marker  */
 #define NAND_PAGES_PER_BLK  64u
 #define NAND_NUM_BLOCKS     4096u
