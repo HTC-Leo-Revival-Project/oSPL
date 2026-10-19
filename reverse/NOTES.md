@@ -136,29 +136,78 @@ wants to be scanned, and the emulator grew `-M keys=` because the HSPL reads
 the matrix in the first moments after reset and a key event from outside
 arrives far too late to matter.
 
-## The NBH, and where this tree is not like the original
+## The NBH
 
-The phone flashes a `LEOIMG.nbh`, and the strings for it are in the image at
-`0x72fa4` and after: `LEOIMG.nbh`, `LEOIMG.nbh - OK`, `LEOIMG.nbh - FAIL`,
-alongside `GetExtRomData+()`, `Ext ROM Start Addr=0x%x, length...` and
-`Storage Start Addr=0x%x`.  So the real bootloader routes the image header to
-find the OS partition and checksums what comes out of it.
+The file is not an image; it is a signed wrapper around a header table and the
+image area, and what the flash ends up holding is the area.  Read off the real
+`LEOIMG.nbh`, not off the code - the code that reads it is past where the Ghidra
+dump stops, and nothing in the image holds a pointer to the `LEOIMG` strings
+either.  The format was already half-known in `qemu-hd2/tools/hd2_mknand.py`,
+which unpacks it; this is the same thing in C.
 
-Ours does not: `autoboot()` reads the WinCE MBR in the OS area directly and
-finds the image from that.  It works, and it is the same answer, but it is a
-deviation and it is the biggest one left.
+    0x00  "R000FF"                six bytes of magic
+    0x06  '\n'
+    0x07  "XDA-Developers! "      sixteen bytes - the name is fifteen and
+                                   the space is part of the field
+    0x17  a block list, until one with a length of zero:
+             u32  length           bytes of data
+             u32  siglen           bytes of signature after it
+             u8   flag             1: the data is signed
+             u8   data[length]
+             u8   sig[siglen]
 
-What has not been worked out yet is the header's own layout.  Nothing in the
-image holds a pointer to those strings - they are reached by some other route
-- and the code that reads them is past `0x6d000`, which is where the Ghidra
-dump stops.  Reading the image rather than the dump got us the command table;
-the header needs the same treatment and it has not had it yet.
+Each block is 0x10000 bytes of data, so a 0x20400-byte image arrives as two
+full blocks and one of 0x400.  Joined back together:
+
+    0x000  the board and partition names, four bytes each, null-padded.
+           The first two are the board ("HT"); the rest are the partitions
+    0x020  where the image goes, as text: "PB8110000" -> 0x81100000
+    0x040  0x00040000
+    0x0c0  0x00020000
+    0x140  how many bytes of OS area follow: 0x20200 = 64 x 0x808
+    0x1c0  "11111111"
+    0x1e0  the version as text: "CLK1.4.0.2"
+    0x1f0  the build tag: "WWE"
+    0x200  the OS area
+
+The area is 64 sectors at a stride of 0x808: 2048 bytes of data and 8 bytes of
+sector info after each.  The sector info is `u32 sector number`, then two bytes
+that repeat the MBR's signature (`fd ff fb ff`).  Only the 2048 goes into the
+flash - the info is what the file needed and the flash never had.  Sector 0 is
+the WinCE MBR and sector 1 is `MSFLSH50`; `hd2_osarea.py` builds the same
+arrangement directly, which is how `images/nand.img` gets its OS area.
+
+Two bytes of every page are not the file's: the part keeps its bad-block marker
+in the last codeword's user area at offset 464 and those bytes have to read
+`0xFF` for the block to count as good.  Comparing a file against a flash that
+has dutifully protected its own health therefore reports a difference that is
+correct behaviour read as damage, so both sides are normalised before the
+checksum is taken.
+
+### `fmrouter` is not what it sounds like
+
+It prints `--- Welcomm to HTC MFG FM Router ---`.  It is the manufacturing
+bridge to the baseband over the message channel (`CheckRadioReady`, `AUD_HP_EN`,
+`Turn on Radio`), not anything to do with routing partitions out of an image.
+Our `fmrouter` lists the partitions the header names, which is what the name
+suggests and is more use than a stub.
+
+### The other container
+
+`RUU_signed.nbh` also starts `R000FF` but has no signature - 16 zero bytes
+where "XDA-Developers!" would be - and is framed quite differently: its block
+list does not begin where this one's does, and a 1 MB file does not divide into
+0x10000-byte blocks with 0x80-byte signatures behind them.  It is the RUUNBH the
+HSPL looks for, and it is a different job.  `nbh_open()` refuses it, and the
+tests report that as a skip rather than a failure.
 
 ## What still has to be worked out
 
 - Whether `flags` is "hidden" or "locked" - `password` and the `Command is
   Locked!` string suggest a real lock, and this tree treats a zero as hidden.
-- The NBH header layout, as above.
+- The RUUNBH container, as above.
+- What `fmrouter`'s message channel can actually do - whether the radio can be
+  brought up from here at all.
 - `dispinit` (`0x95029634`) and `tpd` (`0x95062a74`) - the panel and touch
   bring-up, which is where the MDDI traffic is.
 - The `emapi*` group: nineteen commands driving a BCM4329 over SDIO, with
