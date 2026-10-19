@@ -43,6 +43,10 @@ while True:
             sys.exit("gave up waiting for %s" % sock_path)
         time.sleep(0.1)
 
+# CMDS is one command per line, which keeps "mddir 0x80000" in one piece.
+if not commands:
+    commands = [c for c in os.environ.get("CMDS", "").split("\n") if c.strip()]
+
 log = open(log_path, "wb")
 seen = bytearray()
 

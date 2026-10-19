@@ -88,11 +88,11 @@ M="$M,spl=$SPL_DIR/build/spl.bin"
 # One reader per unix socket, so the thing that logs the console is also the
 # thing that can type at it.  CMDS="info" passes bootloader commands to type.
 # CMDS is a list of commands to type at the bootloader's prompt, one per line.
-CMD_ARGS=
-[ -n "${CMDS:-}" ] && CMD_ARGS=$(printf '%s\n' "$CMDS" | sed 's/.*/"--cmd" "&"/')
-
+# It goes to console.py through the environment rather than as arguments: a
+# command with a space in it does not survive a shell variable and word-split
+# back apart again.
 cd "$EMU/images"
-python3 "$SPL_DIR/tools/console.py" "$SOCK" "$UART" $CMD_ARGS &
+python3 "$SPL_DIR/tools/console.py" "$SOCK" "$UART" &
 LOGGER=$!
 
 say "starting QEMU"
