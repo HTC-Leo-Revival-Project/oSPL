@@ -42,10 +42,28 @@
 #define CMD_PAGE_READ      0x32
 #define CMD_PAGE_READ_ECC  0x33
 #define CMD_PAGE_READ_ALL  0x34
+#define CMD_PRG_PAGE_ECC   0x37
 #define CMD_BLOCK_ERASE    0x3a
 
 /* READ_STATUS bits */
 #define STATUS_READY       0x20
+
+/*
+ * DEV0_CFG0 says both how many codewords an EXEC_CMD covers and, when writing,
+ * how a codeword is laid out: bits 9:18 the user data, 19:22 the parity and
+ * 23:26 the spare area.  A read only cares about the first of those; a write
+ * needs all three, because the controller expects the user data and the spare
+ * back to back in the buffer and puts the parity in itself.
+ */
+#define CFG0_UD            512u
+#define CFG0_ECC           10u
+#define CFG0_SPARE         4u
+#define CFG0_PROGRAM       (CFG0_NCODEWORDS(NAND_CODEWORDS) | \
+                           (CFG0_UD << 9) | (CFG0_ECC << 19) | \
+                           (CFG0_SPARE << 23))
+
+/* How much of a codeword goes into the buffer before a write. */
+#define CFG0_WRITE_LEN     (CFG0_UD + CFG0_ECC + CFG0_SPARE)   /* 526 */
 
 /*
  * DEV0_CFG1:
@@ -179,6 +197,71 @@ int nand_read_page(u32 page, void *dst)
                   mmio_read32(NAND_BASE, FLASH_BUFFER + i));
         }
     }
+    return 0;
+}
+
+/*
+ * Write a page.  Programming only clears bits, so this does not read first:
+ * whatever is already there stays wherever it is not being overwritten, which
+ * is exactly what the part does and exactly why a page has to be erased
+ * before it is written.
+ *
+ * The buffer wants [user data][parity][spare] - the parity is the
+ * controller's to make, and it is modelled as zeroes, so the parity bytes
+ * here are left at whatever the buffer had and the spare area is left
+ * erased.  The bad-block marker is two bytes of the last codeword's user area
+ * on this part, and they have to read 0xFF for the block to count as good.
+ */
+int nand_write_page(u32 page, const void *src)
+{
+    const u8 *in = (const u8 *)src;
+    u8 codeword[NAND_CW_RAW];
+
+    if (page >= NAND_NUM_BLOCKS * NAND_PAGES_PER_BLK) {
+        return -1;
+    }
+
+    mmio_write32(NAND_BASE, DEV0_CFG0, CFG0_PROGRAM);
+    mmio_write32(NAND_BASE, DEV0_CFG1, CFG1_READ);
+    mmio_write32(NAND_BASE, ADDR0, (page & 0xffffu) << 16);
+    mmio_write32(NAND_BASE, ADDR1, (page >> 16) & 0xffu);
+    nand_cmd(CMD_PRG_PAGE_ECC);
+
+    for (u32 cw = 0; cw < NAND_CODEWORDS; cw++) {
+        memset(codeword, 0xff, sizeof(codeword));
+        memcpy(codeword, in + cw * NAND_CW_USER, NAND_CW_USER);
+
+        /*
+         * On the last codeword the marker is two bytes of user data, and
+         * they are what the block's health is read out of.
+         */
+        if (cw == NAND_CODEWORDS - 1) {
+            codeword[464] = 0xff;
+            codeword[465] = 0xff;
+        }
+
+        for (u32 i = 0; i < CFG0_WRITE_LEN; i += 4) {
+            mmio_write32(NAND_BASE, FLASH_BUFFER + i, read_le32(codeword + i));
+        }
+        nand_exec();
+    }
+    return 0;
+}
+
+int nand_erase_block(u32 block)
+{
+    u32 page;
+
+    if (block >= NAND_NUM_BLOCKS) {
+        return -1;
+    }
+    page = block * NAND_PAGES_PER_BLK;
+
+    mmio_write32(NAND_BASE, ADDR0, (page & 0xffffu) << 16);
+    mmio_write32(NAND_BASE, ADDR1, (page >> 16) & 0xffu);
+    nand_cmd(CMD_BLOCK_ERASE);
+    nand_exec();
+    nand_wait_ready();
     return 0;
 }
 

@@ -19,6 +19,7 @@
 
 #include "format.h"
 #include "bl.h"
+#include "flash.h"
 #include "autoboot.h"
 
 /* ---- colours --------------------------------------------------------- */
@@ -141,6 +142,10 @@ static void cmd_help(char **args, int nargs)
         }
         bl_printf("  %-12s %s\n", commands[i].name,
                   commands[i].help ? commands[i].help : "");
+    }
+    for (i = 0; i < (u32)flash_command_count; i++) {
+        bl_printf("  %-12s %s\n", flash_commands[i].name,
+                  flash_commands[i].help);
     }
 }
 
@@ -322,6 +327,12 @@ static void run(char *line)
 
     if (n == 0) {
         return;
+    }
+    for (i = 0; i < (u32)flash_command_count; i++) {
+        if (bl_streq(argv[0], flash_commands[i].name)) {
+            flash_commands[i].handler(argv, n);
+            return;
+        }
     }
     for (i = 0; i < NCOMMANDS; i++) {
         if (commands[i].flags & BL_HIDDEN) {

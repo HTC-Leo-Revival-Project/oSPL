@@ -40,6 +40,15 @@ int nand_read_page(u32 page, void *dst);
 int nand_read_pages(u32 page, void *dst, u32 count);
 
 /*
+ * Write one 2048-byte page.  Programming a NAND can only clear bits, so a
+ * page has to be erased before anything else can go into it.
+ */
+int nand_write_page(u32 page, const void *src);
+
+/* Erase one whole block. 0 on success. */
+int nand_erase_block(u32 block);
+
+/*
  * Copy a run of pages that skips bad blocks, the way the "OS" area is laid
  * out on a part with holes in it.  Starts at `first_page`, which does not
  * have to be a block boundary: a bad block anywhere behind the cursor is
