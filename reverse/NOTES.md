@@ -123,9 +123,23 @@ MicroP-Wrong Platform(0x5)
 and a rainbow, then `BL> ` (or `CMD>`) and the command list. `Cmd>` is at
 `0x2ed5`.
 
+## What has been done about it
+
+All fifty-eight names are in the menu (`spl/misc.c`, `spl/flash.c`,
+`spl/bus.c`, `spl/bl.c`), verified by comparing the two tables. The ones with
+something behind them do it; the ones that need a WiFi dongle, an SD card or
+a Bluetooth controller say that there is none.
+
+`FUN_9505f728` turned out to be the volume-down key, read out of the 3x3
+matrix at `0xa9100c00`: `drivers/keypad/keypad.c` scans it the way the model
+wants to be scanned, and the emulator grew `-M keys=` because the HSPL reads
+the matrix in the first moments after reset and a key event from outside
+arrives far too late to matter.
+
 ## What still has to be worked out
 
-- `FUN_9505f728` - exactly which pin and which edge the key test watches.
+- Whether `flags` is "hidden" or "locked" - `password` and the `Command is
+  Locked!` string suggest a real lock, and this tree treats a zero as hidden.
 - `dispinit` (`0x95029634`) and `tpd` (`0x95062a74`) - the panel and touch
   bring-up, which is where the MDDI traffic is.
 - The `emapi*` group: nineteen commands driving a BCM4329 over SDIO, with
