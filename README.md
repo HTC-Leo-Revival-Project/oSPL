@@ -18,18 +18,29 @@ caches as the boot ROM left them. From there:
 1. bring up the console, so there is something to say;
 2. point the LCDC at a framebuffer, so there is something to show;
 3. leave the board's identity in the globals page, where the OS reads it;
-4. identify the flash and read its geometry;
-5. find the OS image in the NAND "OS" area, from the MBR that describes it;
-6. load it to `0x11800000`;
-7. write the caches back, turn translation off, and jump there.
+4. read the key matrix, because one of the three ways into the bootloader is
+   somebody holding volume down as the phone comes up;
+5. if that is the case, become the bootloader: draw its screen, print `BL>`,
+   and read and run commands until somebody types `boot`;
+6. otherwise identify the flash, find the OS image in the NAND "OS" area,
+   load it to `0x11800000`, write the caches back, and jump there.
 
-That is the same order the real HSPL works in, and it gets the same place:
-the OS runs, and its menu comes up on the panel.
+That is the same order the real HSPL works in, and it gets the same place: the
+OS runs, and its menu comes up on the panel.
 
-What it does *not* yet do is everything the real HSPL does around that: the
-clocks and the PMIC, the panel identify over MDDI, the EEPROM over I2C, the
-bad block table, the data mover, the splash screen. Each of those belongs here
-too, and the tree is arranged for them - see [Layout](#layout).
+**The menu has all fifty-eight of the HSPL's commands** - the same names, so
+anything you know about this phone's bootloader works here. The ones with
+something real behind them do it: read and write memory, read and write the
+flash, erase it, CRC a run of blocks, the panel, the touch screen, the
+compass and the proximity sensor over I2C, the settings and the lock behind
+them. The rest say plainly that this board has no WiFi dongle, no SD card and
+no Bluetooth controller for them to talk to, rather than quietly doing
+nothing.
+
+What it does *not* do is everything the real HSPL does around that: the clocks
+and the PMIC, the panel identify over MDDI, the EEPROM, the bad block table,
+the data mover, the splash screen. Each of those belongs here too, and the
+tree is arranged for them - see [Layout](#layout).
 
 ## Building
 
@@ -73,14 +84,24 @@ include/          board.h is the memory map, spl.h is types and helpers
 drivers/uart      the console, on UART1DM
 drivers/nand      the flash: identify, read a page, read a run skipping bad
                   blocks
-drivers/display   the MDP display processor and the LCDC behind it
+drivers/display   the MDP display processor, the LCDC, and text on them
+drivers/gpio      the GPIO banks
+drivers/keypad    the 3x3 key matrix
+drivers/i2c       the I2C bus
 drivers/timer     delays, off the CSR's DGT
 spl/start.c       the reset stub: a stack, and out of the way
 spl/entry.c       .bss, and into C
 spl/main.c        the boot flow, in the order it happens
 spl/osimage.c     finding and loading the image in the NAND "OS" area
 spl/boot.c        cleaning up and handing the core over
+spl/bl.c          the bootloader's screen, its prompt and its commands
+spl/flash.c       the commands that touch the NAND
+spl/bus.c         the commands that talk to things on a bus
+spl/misc.c        the panel, the power, the settings, and the rest of the menu
+spl/format.c      the one printf, with the sinks as callbacks
 linker/spl.ld     the flat image, entry at offset 0
+reverse/          what was worked out of the phone's own HSPL, and the tools
+tools/            the font generator, and the console session
 run-lle.sh        boot it in the emulator, in baseband/DSP LLE mode
 ```
 
@@ -114,6 +135,12 @@ the page's data and the ECC, spare and marker bytes are all behind it.
 image, the framebuffer and the globals all went through the D-cache, and
 whatever is still dirty in it is invisible to whoever runs next. `boot.c`
 walks the set/way space from `CTR` and `CLIDR` to write it all back.
+
+**The link keeps out of `0x400`.** The boot ROM puts a coarse page table
+there, for the window the board's globals are read through, and fills it in
+before handing the core over. In the phone's own half-megabyte HSPL that is
+zero padding; in a sixteen-kilobyte image it is live code, and a page table
+written over it makes the image jump into the middle of a function.
 
 ## Test
 

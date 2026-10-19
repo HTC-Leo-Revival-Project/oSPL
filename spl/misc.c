@@ -226,6 +226,7 @@ static void cmd_ruustart(char **args, int nargs)
  */
 static void cmd_fmrouter(char **args, int nargs)
 {
+    (void)args;
     if (nargs < 3) {
         bl_printf("CMD>fmrouter <image> <partition>\n");
         return;
