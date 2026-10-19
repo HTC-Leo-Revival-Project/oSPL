@@ -136,10 +136,29 @@ wants to be scanned, and the emulator grew `-M keys=` because the HSPL reads
 the matrix in the first moments after reset and a key event from outside
 arrives far too late to matter.
 
+## The NBH, and where this tree is not like the original
+
+The phone flashes a `LEOIMG.nbh`, and the strings for it are in the image at
+`0x72fa4` and after: `LEOIMG.nbh`, `LEOIMG.nbh - OK`, `LEOIMG.nbh - FAIL`,
+alongside `GetExtRomData+()`, `Ext ROM Start Addr=0x%x, length...` and
+`Storage Start Addr=0x%x`.  So the real bootloader routes the image header to
+find the OS partition and checksums what comes out of it.
+
+Ours does not: `autoboot()` reads the WinCE MBR in the OS area directly and
+finds the image from that.  It works, and it is the same answer, but it is a
+deviation and it is the biggest one left.
+
+What has not been worked out yet is the header's own layout.  Nothing in the
+image holds a pointer to those strings - they are reached by some other route
+- and the code that reads them is past `0x6d000`, which is where the Ghidra
+dump stops.  Reading the image rather than the dump got us the command table;
+the header needs the same treatment and it has not had it yet.
+
 ## What still has to be worked out
 
 - Whether `flags` is "hidden" or "locked" - `password` and the `Command is
   Locked!` string suggest a real lock, and this tree treats a zero as hidden.
+- The NBH header layout, as above.
 - `dispinit` (`0x95029634`) and `tpd` (`0x95062a74`) - the panel and touch
   bring-up, which is where the MDDI traffic is.
 - The `emapi*` group: nineteen commands driving a BCM4329 over SDIO, with
