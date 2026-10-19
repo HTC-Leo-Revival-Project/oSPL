@@ -76,6 +76,8 @@ struct bl_command {
 /* The other groups of commands, which the menu knows nothing about. */
 extern const struct bl_flash_command bus_commands[];
 extern const int bus_command_count;
+extern const struct bl_flash_command misc_commands[];
+extern const int misc_command_count;
 
 static void cmd_help(char **args, int nargs);
 static void cmd_blversion(char **args, int nargs);
@@ -154,6 +156,10 @@ static void cmd_help(char **args, int nargs)
     for (i = 0; i < (u32)bus_command_count; i++) {
         bl_printf("  %-12s %s\n", bus_commands[i].name,
                   bus_commands[i].help);
+    }
+    for (i = 0; i < (u32)misc_command_count; i++) {
+        bl_printf("  %-12s %s\n", misc_commands[i].name,
+                  misc_commands[i].help);
     }
 }
 
@@ -345,6 +351,12 @@ static void run(char *line)
     for (i = 0; i < (u32)bus_command_count; i++) {
         if (bl_streq(argv[0], bus_commands[i].name)) {
             bus_commands[i].handler(argv, n);
+            return;
+        }
+    }
+    for (i = 0; i < (u32)misc_command_count; i++) {
+        if (bl_streq(argv[0], misc_commands[i].name)) {
+            misc_commands[i].handler(argv, n);
             return;
         }
     }
