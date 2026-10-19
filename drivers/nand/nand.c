@@ -17,6 +17,7 @@
 #include "spl.h"
 #include "board.h"
 #include "nand.h"
+#include "drivers/gpio/gpio.h"
 
 /* registers */
 #define FLASH_CMD          0x00
@@ -96,11 +97,12 @@ static inline void nand_wait_ready(void)
 static inline void nand_chip_select(int on)
 {
     /*
-     * The chip select is active low and lives on a GPIO1 output; drive it by
-     * value through the pin's shadow so we do not depend on the direction
-     * register the last owner left behind.
+     * The chip select is an output on GPIO1 and is active low, so "on" is a
+     * zero in the register.  Driving it by value through the pin's shadow
+     * rather than trusting the direction register the last owner left behind
+     * is what makes it safe to call this before anything else has run.
      */
-    *(volatile u32 *)(GPIO1_BASE + 0x04) = on ? (1u << GPIO_NAND_CS) : 0u;
+    gpio_set_nand_cs(!on);
 }
 
 int nand_init(struct nand_info *info)

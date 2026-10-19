@@ -15,6 +15,8 @@
 #include "board.h"
 
 #include "drivers/uart/uart.h"
+#include "drivers/gpio/gpio.h"
+#include "drivers/keypad/keypad.h"
 #include "drivers/nand/nand.h"
 #include "drivers/display/display.h"
 #include "drivers/timer/timer.h"
@@ -63,6 +65,19 @@ void spl_main(void)
      */
     display_init();
     board_identify();
+
+    /*
+     * Volume-down held down at reset is how the phone is asked to stop being
+     * a way of reaching the OS and become its own bootloader.  It is one of
+     * three ways in - the others are a tag the flashing tool leaves behind and
+     * a tag in a flashed image that says there is something to go to - and it
+     * is the only one of the three that a person holding the phone can do.
+     */
+    keypad_init();
+    if (keypad_held(KEY_VOLDOWN, BL_HOLD_MS)) {
+        uart_puts("SPL: volume-down held, staying in the bootloader\r\n");
+        stop();
+    }
 
     /*
      * Identify the flash.  Everything after this depends on it, so stop here

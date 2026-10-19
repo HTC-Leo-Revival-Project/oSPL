@@ -27,8 +27,7 @@ CFLAGS  := --target=$(TARGET) $(ARCH) \
            -std=gnu11 -O2 -g \
            -Wall -Wextra -Wundef -Wshadow -Wvla \
            -ffunction-sections -fdata-sections \
-           -I. -Iinclude -Ispl \
-           -Idrivers/uart -Idrivers/nand -Idrivers/display -Idrivers/timer
+           -I. -Iinclude -Ispl $(addprefix -I,$(wildcard drivers/*))
 
 BUILD   := build
 BIN     := $(BUILD)/spl

@@ -46,6 +46,13 @@
 #define GPIO_NAND_CS        15
 #define GPIO_NAND_IRQ       14
 
+/*
+ * How long the volume-down key has to be held at reset to mean "stay in the
+ * bootloader".  Long enough that it is a decision, short enough that nobody
+ * thinks the phone has hung.
+ */
+#define BL_HOLD_MS          1000u
+
 /* ---- the panel ------------------------------------------------------ */
 /*
  * The HD2's LCD is 480x800.  The SPL sets the scanout to an RGB565 buffer
